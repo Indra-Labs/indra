@@ -139,7 +139,7 @@ func (cl *Client) forward(on *forward.OnionSkin, b slice.Bytes,
 
 func (cl *Client) layer(on *layer.OnionSkin, b slice.Bytes, c *slice.Cursor) {
 	// this is probably an encrypted layer for us.
-	hdr, _ := cl.FindCloaked(on.Cloak)
+	hdr, _, _ := cl.FindCloaked(on.Cloak)
 	if hdr == nil {
 		log.I.Ln("no matching key found from cloaked key")
 		return
@@ -155,7 +155,7 @@ func (cl *Client) noop(on *noop.OnionSkin, b slice.Bytes, c *slice.Cursor) {
 
 func (cl *Client) purchase(on *purchase.OnionSkin, b slice.Bytes, c *slice.Cursor) {
 	// Create a new Session.
-	s := session2.NewSession(on.ID, on.NBytes, DefaultDeadline)
+	s := session2.New(on.ID, on.NBytes, DefaultDeadline)
 	se := &session.OnionSkin{
 		ID:         s.ID,
 		HeaderKey:  s.HeaderPub,
@@ -163,6 +163,15 @@ func (cl *Client) purchase(on *purchase.OnionSkin, b slice.Bytes, c *slice.Curso
 		Onion:      &noop.OnionSkin{},
 	}
 	cl.Mutex.Lock()
+	// If there is already a session for the same ID (if a client previously
+	// used SendKeys with the current client, and the deadline hasn't
+	// passed) we need to remove it now, as the client will not use it again
+	// anyway.
+	sess := cl.Sessions.Find(on.ID)
+	if sess != nil {
+		cl.Sessions.Delete(sess)
+	}
+	// Add the new session.
 	cl.Sessions.Add(s)
 	cl.Mutex.Unlock()
 	header := b[*c:c.Inc(ReverseHeaderLen)]
@@ -193,9 +202,8 @@ func (cl *Client) reverse(on *reverse.OnionSkin, b slice.Bytes,
 			first := *c
 			second := first + ReverseLayerLen
 			last := second + ReverseLayerLen
-			hdr, pld := cl.FindCloaked(on1.Cloak)
+			hdr, pld, _ := cl.FindCloaked(on1.Cloak)
 			// We need to find the PayloadPub to match.
-			// ses := cl.Sessions.FindPub(hdr.Pub)
 			hdrPrv := hdr
 			hdrPub := on1.FromPub
 			blk := ciph.GetBlock(hdrPrv, hdrPub)
@@ -230,7 +238,9 @@ func (cl *Client) response(on *response.OnionSkin, b slice.Bytes, cur *slice.Cur
 	cl.ExitHooks.Find(on.Hash)
 }
 
-func (cl *Client) session(s *session.OnionSkin, b slice.Bytes, cur *slice.Cursor) {
+func (cl *Client) session(s *session.OnionSkin, b slice.Bytes,
+	cur *slice.Cursor) {
+
 	// Session is returned from a Purchase message in the reverse layers.
 	//
 	// Session has a nonce.ID that is given in the last layer of a LN sphinx
